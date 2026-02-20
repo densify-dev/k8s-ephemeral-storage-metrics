@@ -38,6 +38,15 @@ Configure:
 
 - `DOCKER_USERNAME`
 - `DOCKER_PASSWORD`
+- `DOCKER_IMAGE_REPO` (optional; GitHub Actions variable, not a secret)
+
+`DOCKER_IMAGE_REPO` behavior (from `.github/workflows/release-tag.yml`):
+
+- If unset or empty, the workflow defaults to
+  `docker.io/${DOCKER_USERNAME}/k8s-ephemeral-storage-metrics`.
+- Leading/trailing whitespace is trimmed and a trailing `/` is removed.
+- If the resolved repo is still empty or contains whitespace, the workflow
+  fails before publishing.
 
 Tag behavior:
 

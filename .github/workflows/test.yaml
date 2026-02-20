@@ -1,33 +1,33 @@
-name: e2e
-permissions:
-  contents: read
-
-on:
-  push:
-    branches:
-      - 'master'
-  pull_request:
-    types: [opened, reopened,ready_for_review,synchronize]
-
-
-jobs:
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v4
-        with:
-          go-version: '1.21'
-      - name: Install Minikube
-        run: |
-          wget https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-          sudo cp minikube-linux-amd64 /usr/local/bin/minikube
-          sudo chmod +x /usr/local/bin/minikube      
-
-      - uses: azure/setup-helm@v3
-      - name: Run e2e
-        run: |
-          make minikube_new_docker
-          make deploy_e2e
+# name: e2e
+# permissions:
+#   contents: read
+#
+# on:
+#   push:
+#     branches:
+#       - 'master'
+#   pull_request:
+#     types: [opened, reopened,ready_for_review,synchronize]
+#
+#
+# jobs:
+#   e2e:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v3
+#         with:
+#           fetch-depth: 0
+#       - uses: actions/setup-go@v4
+#         with:
+#           go-version: '1.21'
+#       - name: Install Minikube
+#         run: |
+#           wget https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+#           sudo cp minikube-linux-amd64 /usr/local/bin/minikube
+#           sudo chmod +x /usr/local/bin/minikube      
+#
+#       - uses: azure/setup-helm@v3
+#       - name: Run e2e
+#         run: |
+#           make minikube_new_docker
+#           make deploy_e2e

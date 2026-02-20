@@ -19,9 +19,9 @@ This project does not monitor CSI backed ephemeral storage ex. [Generic ephemera
 ## Helm Install
 
 ```bash
-helm repo add densify-dev https://densify-dev.github.io/helm-charts
+helm repo add kubex https://densify-dev.github.io/helm-charts
 helm repo update
-helm upgrade --install my-deployment densify-dev/k8s-ephemeral-storage-metrics
+helm upgrade --install my-deployment kubex/k8s-ephemeral-storage-metrics
 ```
 
 ## Automated Tag Release (Image Only)

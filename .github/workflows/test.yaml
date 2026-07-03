@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
+  checks: write
 
 jobs:
   unit:
@@ -20,5 +22,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run unit tests
-        run: go test ./...
+      - name: Run unit tests with coverage
+        run: go test -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Convert coverage to Cobertura XML
+        run: |
+          go install github.com/boumenot/gocover-cobertura@latest
+          gocover-cobertura < coverage.out > coverage.xml
+
+      - name: Report coverage on PR
+        uses: dorny/test-reporter@v2
+        with:
+          name: Go Coverage
+          path: coverage.xml
+          reporter: java-cobertura
+          token: ${{ secrets.GITHUB_TOKEN }}

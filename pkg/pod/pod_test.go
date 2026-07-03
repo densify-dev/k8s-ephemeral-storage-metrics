@@ -54,8 +54,6 @@ func setupPodMetrics() {
 
 		// Wait for initGetPodsData to finish
 		c.WaitGroup.Wait()
-		// Give podWatch a moment to capture dev.Clientset
-		time.Sleep(50 * time.Millisecond)
 		// ponytail: podWatch goroutine leaks; process exit cleans up
 		dev.Clientset = origClient
 		for _, key := range envKeys {
@@ -144,8 +142,6 @@ func TestNewCollector_AllEnabled(t *testing.T) {
 	// Wait for initGetPodsData goroutine to finish before restoring client
 	// initGetPodsData calls WaitGroup.Done(), so Wait() blocks until it's done
 	c.WaitGroup.Wait()
-	// Give podWatch a moment to capture dev.Clientset for its informer
-	time.Sleep(50 * time.Millisecond)
 	// ponytail: goroutine leak from podWatch accepted; process exit cleans up
 	dev.Clientset = origClient
 }
@@ -480,6 +476,7 @@ func TestInitGetPodsData(t *testing.T) {
 		lookup:                    &lookup,
 		lookupMutex:               &sync.RWMutex{},
 		WaitGroup:                 &sync.WaitGroup{},
+		clientset:                 fakeClient,
 	}
 	cr.WaitGroup.Add(1)
 	go cr.initGetPodsData()
@@ -515,6 +512,7 @@ func TestInitGetPodsData_SkipsNonRunning(t *testing.T) {
 		lookup:                    &lookup,
 		lookupMutex:               &sync.RWMutex{},
 		WaitGroup:                 &sync.WaitGroup{},
+		clientset:                 fakeClient,
 	}
 	cr.WaitGroup.Add(1)
 	go cr.initGetPodsData()
@@ -1009,6 +1007,7 @@ func TestRunGC_EvictsDeletedPods(t *testing.T) {
 	c := Collector{
 		lookup:      &lookup,
 		lookupMutex: &sync.RWMutex{},
+		clientset:   fakeClient,
 	}
 
 	c.runGC(500)
@@ -1041,6 +1040,7 @@ func TestRunGC_ListError(t *testing.T) {
 	c := Collector{
 		lookup:      &lookup,
 		lookupMutex: &sync.RWMutex{},
+		clientset:   fakeClient,
 	}
 
 	c.runGC(500)
@@ -1063,6 +1063,7 @@ func TestGcMetrics_NoPanic(t *testing.T) {
 	c := Collector{
 		lookup:      &map[string]pod{},
 		lookupMutex: &sync.RWMutex{},
+		clientset:   fakeClient,
 	}
 
 	go c.gcMetrics(1, 500) // 1-minute tick, not firing during test
@@ -1103,6 +1104,7 @@ func TestInitGetPodsData_EmptyCluster(t *testing.T) {
 		lookup:                    &lookup,
 		lookupMutex:               &sync.RWMutex{},
 		WaitGroup:                 &sync.WaitGroup{},
+		clientset:                 fakeClient,
 	}
 	cr.WaitGroup.Add(1)
 	go cr.initGetPodsData()
@@ -1150,6 +1152,7 @@ func TestRunGC_Pagination(t *testing.T) {
 	c := Collector{
 		lookup:      &lookup,
 		lookupMutex: &sync.RWMutex{},
+		clientset:   fakeClient,
 	}
 
 	c.runGC(1)

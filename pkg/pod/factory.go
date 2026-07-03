@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/jmcgrath207/k8s-ephemeral-storage-metrics/pkg/dev"
 )
@@ -29,6 +30,7 @@ type Collector struct {
 	lookupMutex                     *sync.RWMutex
 	podUsage                        bool
 	WaitGroup                       *sync.WaitGroup
+	clientset                       kubernetes.Interface
 	sampleInterval                  int64
 }
 
@@ -56,8 +58,9 @@ func NewCollector(sampleInterval int64) Collector {
 		lookup:                          &lookup,
 		lookupMutex:                     &lookupMutex,
 		podUsage:                        podUsage,
-		sampleInterval:                  sampleInterval,
 		WaitGroup:                       &waitGroup,
+		clientset:                       dev.Clientset,
+		sampleInterval:                  sampleInterval,
 	}
 
 	c.createMetrics()
@@ -96,7 +99,7 @@ func (cr Collector) runGC(batchSize int64) {
 	paginationContinue := ""
 
 	for {
-		pods, err := dev.Clientset.CoreV1().Pods("").List(
+		pods, err := cr.clientset.CoreV1().Pods("").List(
 			context.Background(),
 			metav1.ListOptions{Limit: batchSize, Continue: paginationContinue},
 		)

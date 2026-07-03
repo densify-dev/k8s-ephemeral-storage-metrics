@@ -27,7 +27,7 @@ func TestGetEnv_SetReturnsValue(t *testing.T) {
 	}
 }
 
-func TestGetEnv_EmptyStringUsesFallback(t *testing.T) {
+func TestGetEnv_EmptyStringReturnsEmpty(t *testing.T) {
 	os.Setenv("TEST_GETENV_EMPTY", "")
 	defer os.Unsetenv("TEST_GETENV_EMPTY")
 	got := GetEnv("TEST_GETENV_EMPTY", "fallback_val")

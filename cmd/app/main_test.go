@@ -45,7 +45,10 @@ func setupClientset(t *testing.T, server *httptest.Server) {
 			NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
 		},
 	}
-	restClient, _ := rest.RESTClientFor(config)
+	restClient, err := rest.RESTClientFor(config)
+	if err != nil {
+		t.Fatal(err)
+	}
 	clientset := kubernetes.New(restClient)
 
 	dev.Clientset = clientset

@@ -7,15 +7,11 @@ on:
       - master
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   unit:
     runs-on: ubuntu-latest
-    env:
-      # ponytail: temporary until gwatts/go-coverage-action stops declaring node20 runtime
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,14 +22,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Go coverage
-        if: github.event_name == 'push'
-        uses: gwatts/go-coverage-action@v2
-        with:
-          cover-mode: atomic
-          cover-pkg: ./...
-          test-pkgs: ./...
-
-      - name: Go test coverage
-        if: github.event_name == 'pull_request'
+      - name: Go test
         run: go test -covermode atomic -coverpkg ./... ./...

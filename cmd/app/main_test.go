@@ -232,8 +232,21 @@ func startAppTest(t *testing.T, extraEnv func()) string {
 	go StartApplication(strconv.Itoa(freePort), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`metrics output`))
 	}))
-	time.Sleep(100 * time.Millisecond)
-	return fmt.Sprintf("http://127.0.0.1:%d/metrics", freePort)
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", freePort)
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			return url
+		}
+		lastErr = err
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("metrics server did not start in time: %v", lastErr)
+	return url
 }
 
 func TestStartApplication_NoCrash(t *testing.T) {

@@ -154,3 +154,59 @@ func TestEnablePprof_DoubleStart(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	// Second call should log error but not panic (ListenAndServe just returns err)
 }
+
+func TestConfigureK8sClient_Defaults(t *testing.T) {
+	config := rest.Config{Host: "https://localhost:8443"}
+	ConfigureK8sClient(&config)
+	if Clientset == nil {
+		t.Error("expected Clientset to be initialized")
+	}
+	Clientset = nil
+}
+
+func TestConfigureK8sClient_QPS(t *testing.T) {
+	os.Setenv("CLIENT_GO_QPS", "42")
+	defer os.Unsetenv("CLIENT_GO_QPS")
+
+	config := rest.Config{Host: "https://localhost:8443"}
+	ConfigureK8sClient(&config)
+	if Clientset == nil {
+		t.Error("expected Clientset to be initialized")
+	}
+	if config.QPS != 42 {
+		t.Errorf("expected QPS 42, got %f", config.QPS)
+	}
+	Clientset = nil
+}
+
+func TestConfigureK8sClient_Burst(t *testing.T) {
+	os.Setenv("CLIENT_GO_BURST", "99")
+	defer os.Unsetenv("CLIENT_GO_BURST")
+
+	config := rest.Config{Host: "https://localhost:8443"}
+	ConfigureK8sClient(&config)
+	if Clientset == nil {
+		t.Error("expected Clientset to be initialized")
+	}
+	if config.Burst != 99 {
+		t.Errorf("expected Burst 99, got %d", config.Burst)
+	}
+	Clientset = nil
+}
+
+func TestConfigureK8sClient_ScrapeFromKubelet(t *testing.T) {
+	os.Setenv("SCRAPE_FROM_KUBELET", "true")
+	defer os.Unsetenv("SCRAPE_FROM_KUBELET")
+
+	config := rest.Config{Host: "https://localhost:8443"}
+	ConfigureK8sClient(&config)
+	if Clientset == nil {
+		t.Error("expected Clientset to be initialized")
+	}
+	if ClientRaw == nil {
+		t.Error("expected ClientRaw to be initialized from scrape path")
+	}
+	Clientset = nil
+	ClientRaw = nil
+	ClientAno = nil
+}

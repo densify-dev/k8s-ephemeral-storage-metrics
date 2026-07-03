@@ -113,14 +113,19 @@ func getMetrics() {
 func main() {
 	flag.Parse()
 	port := dev.GetEnv("METRICS_PORT", "9100")
+	StartApplication(port, promhttp.Handler())
+}
 
+func StartApplication(port string, metricsHandler http.Handler) {
 	// Shared Vars
 	pprofEnabled, _ := strconv.ParseBool(dev.GetEnv("PPROF", "false"))
 	sampleInterval, _ = strconv.ParseInt(dev.GetEnv("SCRAPE_INTERVAL", "15"), 10, 64)
 	sampleIntervalMill = sampleInterval * 1000
 
 	dev.SetLogger()
-	dev.SetK8sClient()
+	if dev.Clientset == nil {
+		dev.SetK8sClient()
+	}
 	Node = node.NewCollector(sampleInterval)
 	Pod = pod.NewCollector(sampleInterval)
 
@@ -128,14 +133,19 @@ func main() {
 		go dev.EnablePprof()
 	}
 	go getMetrics()
-	http.Handle("/metrics", promhttp.Handler())
 	log.Info().Msg(fmt.Sprintf("Starting server listening on :%s", port))
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%s", port),
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metricsHandler)
+	ServeMetrics(fmt.Sprintf(":%s", port), mux)
+}
+
+func ServeMetrics(addr string, handler http.Handler) {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	err := server.ListenAndServe()
-	if err != nil {
+	if err := srv.ListenAndServe(); err != nil {
 		log.Error().Msg(fmt.Sprintf("Listener Failed : %s\n", err.Error()))
 		panic(err.Error())
 	}

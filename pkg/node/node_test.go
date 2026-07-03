@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,11 +17,13 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 var (
@@ -390,6 +393,42 @@ func TestRunGC_EvictsDeletedNode(t *testing.T) {
 	}
 }
 
+func TestRunGC_NodeListError(t *testing.T) {
+	setupNodeEnv()
+
+	// Node's runGC uses `continue` on error, which would loop forever if List always fails.
+	// Use a reactor that errors once then succeeds.
+	callCount := 0
+	fakeClient := fake.NewSimpleClientset(
+		&v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "existing-node"}},
+	)
+	fakeClient.Fake.PrependReactor("list", "nodes", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		callCount++
+		if callCount <= 1 {
+			return true, nil, fmt.Errorf("transient error")
+		}
+		return false, nil, nil
+	})
+	origClient := dev.Clientset
+	dev.Clientset = fakeClient
+	defer func() { dev.Clientset = origClient }()
+
+	n := &Node{
+		AdjustedPollingRate: false,
+		Set:                 mapset.NewSet[string](),
+		KubeletEndpoint:     &sync.Map{},
+	}
+	n.Set.Add("existing-node")
+
+	n.runGC(500)
+
+	if !n.Set.Contains("existing-node") {
+		t.Error("expected existing-node to survive after transient error")
+	}
+}
+
+
+
 func TestRunGC_KeepsExistingNode(t *testing.T) {
 	setupNodeEnv()
 
@@ -414,6 +453,55 @@ func TestRunGC_KeepsExistingNode(t *testing.T) {
 
 	if !n.Set.Contains("existing-node") {
 		t.Error("expected existing-node to remain after GC")
+	}
+}
+
+func TestRunGC_NodesPagination(t *testing.T) {
+	// Test the nodes.Continue path in runGC
+	setupNodeEnv()
+
+	callCount := 0
+	fakeClient := fake.NewSimpleClientset()
+	fakeClient.Fake.PrependReactor("list", "nodes", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		callCount++
+		if callCount == 1 {
+			return true, &v1.NodeList{
+				Items: []v1.Node{
+					{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}},
+				},
+				ListMeta: metav1.ListMeta{
+					Continue: "next-page",
+				},
+			}, nil
+		}
+		return true, &v1.NodeList{
+			Items: []v1.Node{
+				{ObjectMeta: metav1.ObjectMeta{Name: "node-b"}},
+			},
+		}, nil
+	})
+	origClient := dev.Clientset
+	dev.Clientset = fakeClient
+	defer func() { dev.Clientset = origClient }()
+
+	n := &Node{
+		AdjustedPollingRate: false,
+		nodeAvailable:       false,
+		nodeCapacity:        false,
+		nodePercentage:      false,
+		Set:                 mapset.NewSet[string](),
+		KubeletEndpoint:     &sync.Map{},
+	}
+	n.Set.Add("node-a")
+	n.Set.Add("node-b")
+
+	n.runGC(500)
+
+	if !n.Set.Contains("node-a") {
+		t.Error("expected node-a to remain")
+	}
+	if !n.Set.Contains("node-b") {
+		t.Error("expected node-b to remain (found via pagination)")
 	}
 }
 
@@ -961,6 +1049,53 @@ func TestWatch_DeleteNode_WithScrapeFromKubelet(t *testing.T) {
 	}
 
 	dev.Clientset = origClient
+}
+
+func TestQuery_ScrapeFromKubelet_ReadOnlyGetError(t *testing.T) {
+	// ponytail: GET failure in kubelet read-only path → n.evict calls pod.EvictPodByNode
+	setupNodeEnv()
+	pod.NewCollector(15)
+	n := &Node{
+		scrapeFromKubelet:   true,
+		deployType:          "Deployment",
+		kubeletReadOnlyPort: 10255,
+		sampleInterval:      1,
+		KubeletEndpoint:     &sync.Map{},
+		Set:                 mapset.NewSet[string](),
+	}
+	n.KubeletEndpoint.Store("bad-node", "http://192.0.2.1:10255") // non-routable IP
+
+	origAno := dev.ClientAno
+	dev.ClientAno = &http.Client{Timeout: 10 * time.Millisecond}
+	defer func() { dev.ClientAno = origAno }()
+
+	_, err := n.Query("bad-node")
+	if err == nil {
+		t.Error("expected error from GET failure")
+	}
+}
+
+func TestQuery_ScrapeFromKubelet_DefaultPortGetError(t *testing.T) {
+	// ponytail: GET failure in kubelet default port path → n.evict calls pod.EvictPodByNode
+	pod.NewCollector(15)
+	n := &Node{
+		scrapeFromKubelet:   true,
+		deployType:          "Deployment",
+		kubeletReadOnlyPort: 0,
+		sampleInterval:      1,
+		KubeletEndpoint:     &sync.Map{},
+		Set:                 mapset.NewSet[string](),
+	}
+	n.KubeletEndpoint.Store("bad-node", "http://192.0.2.2:10250")
+
+	origRaw := dev.ClientRaw
+	dev.ClientRaw = &http.Client{Timeout: 10 * time.Millisecond}
+	defer func() { dev.ClientRaw = origRaw }()
+
+	_, err := n.Query("bad-node")
+	if err == nil {
+		t.Error("expected error from GET failure")
+	}
 }
 
 func isNaN(v float64) bool {

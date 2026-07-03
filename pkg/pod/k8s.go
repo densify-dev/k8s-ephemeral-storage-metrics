@@ -2,7 +2,6 @@ package pod
 
 import (
 	"context"
-	"github.com/jmcgrath207/k8s-ephemeral-storage-metrics/pkg/dev"
 	"github.com/rs/zerolog/log"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,7 +44,7 @@ func (cr Collector) getPodData(p v1.Pod) {
 
 func (cr Collector) initGetPodsData() {
 	// Init Get List of all pods
-	pods, err := dev.Clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
+	pods, err := cr.clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Error().Msgf("Error getting pods: %v\n", err)
 		os.Exit(1)
@@ -62,7 +61,7 @@ func (cr Collector) podWatch() {
 	cr.WaitGroup.Wait()
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	sharedInformerFactory := informers.NewSharedInformerFactory(dev.Clientset, time.Duration(cr.sampleInterval)*time.Second)
+	sharedInformerFactory := informers.NewSharedInformerFactory(cr.clientset, time.Duration(cr.sampleInterval)*time.Second)
 	podInformer := sharedInformerFactory.Core().V1().Pods().Informer()
 
 	// Define event handlers for Pod events

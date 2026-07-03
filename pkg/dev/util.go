@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	Clientset *kubernetes.Clientset
+	Clientset kubernetes.Interface
 	ClientRaw *http.Client
 	ClientAno *http.Client
 )
@@ -60,7 +60,12 @@ func SetK8sClient() {
 		log.Error().Msg("Failed to get rest config for in cluster client")
 		panic(err.Error())
 	}
+	ConfigureK8sClient(config)
+}
 
+// ConfigureK8sClient applies env-var overrides to a k8s config and sets the global Clientset.
+// Extracted from SetK8sClient for testability.
+func ConfigureK8sClient(config *rest.Config) {
 	scrapeFromKubelet, _ := strconv.ParseBool(GetEnv("SCRAPE_FROM_KUBELET", "false"))
 	if scrapeFromKubelet {
 		setScrapeFromKubelet(config)
@@ -75,6 +80,7 @@ func SetK8sClient() {
 	}
 
 	// creates the clientset
+	var err error
 	Clientset, err = kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Error().Msg("Failed to get client set for in cluster client")

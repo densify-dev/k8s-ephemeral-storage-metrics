@@ -111,7 +111,8 @@ func (n Node) runGC(batchSize int64) {
 		)
 		if err != nil {
 			log.Error().Msgf("Error getting nodes: %v", err)
-			continue
+			// Exit this GC cycle on error; partial data must not evict tracked nodes.
+			return
 		}
 
 		// Collect pod names from this batch

@@ -296,6 +296,38 @@ func TestAdjustedPollingRate_Set(t *testing.T) {
 	}
 }
 
+func TestCreateMetrics_AdjustedPollingRateLateInit(t *testing.T) {
+	if nodeAvailableGaugeVec != nil {
+		prometheus.Unregister(nodeAvailableGaugeVec)
+	}
+	if nodeCapacityGaugeVec != nil {
+		prometheus.Unregister(nodeCapacityGaugeVec)
+	}
+	if nodePercentageGaugeVec != nil {
+		prometheus.Unregister(nodePercentageGaugeVec)
+	}
+	if AdjustedPollingRateGaugeVec != nil {
+		prometheus.Unregister(AdjustedPollingRateGaugeVec)
+	}
+	nodeAvailableGaugeVec = nil
+	nodeCapacityGaugeVec = nil
+	nodePercentageGaugeVec = nil
+	AdjustedPollingRateGaugeVec = nil
+	defer setupNodeEnv()
+
+	n := &Node{AdjustedPollingRate: false}
+	n.createMetrics()
+	if AdjustedPollingRateGaugeVec != nil {
+		t.Fatal("expected adjusted polling metric to stay nil when disabled")
+	}
+
+	n.AdjustedPollingRate = true
+	n.createMetrics()
+	if AdjustedPollingRateGaugeVec == nil {
+		t.Fatal("expected adjusted polling metric to initialize when enabled later")
+	}
+}
+
 func TestEvict(t *testing.T) {
 	setupNodeEnv()
 	// Init pod metrics so EvictPodByNode doesn't nil-pointer
@@ -426,8 +458,6 @@ func TestRunGC_NodeListError(t *testing.T) {
 		t.Error("expected existing-node to survive after transient error")
 	}
 }
-
-
 
 func TestRunGC_KeepsExistingNode(t *testing.T) {
 	setupNodeEnv()
@@ -668,12 +698,12 @@ func TestWatch_DeleteNode(t *testing.T) {
 	pod.NewCollector(15)
 
 	n := &Node{
-		deployType:          "Deployment",
-		sampleInterval:      1,
-		scrapeFromKubelet:   false,
-		Set:                 mapset.NewSet[string](),
-		KubeletEndpoint:     &sync.Map{},
-		WaitGroup:           &waitGroup,
+		deployType:        "Deployment",
+		sampleInterval:    1,
+		scrapeFromKubelet: false,
+		Set:               mapset.NewSet[string](),
+		KubeletEndpoint:   &sync.Map{},
+		WaitGroup:         &waitGroup,
 	}
 	n.Set.Add("delete-me")
 
@@ -714,12 +744,12 @@ func TestWatch_UpdateNode(t *testing.T) {
 	dev.Clientset = fakeClient
 
 	n := &Node{
-		deployType:          "Deployment",
-		sampleInterval:      1,
-		scrapeFromKubelet:   false,
-		Set:                 mapset.NewSet[string](),
-		KubeletEndpoint:     &sync.Map{},
-		WaitGroup:           &waitGroup,
+		deployType:        "Deployment",
+		sampleInterval:    1,
+		scrapeFromKubelet: false,
+		Set:               mapset.NewSet[string](),
+		KubeletEndpoint:   &sync.Map{},
+		WaitGroup:         &waitGroup,
 	}
 
 	go n.Watch()
@@ -759,6 +789,31 @@ func TestWatch_UpdateNode(t *testing.T) {
 	}
 
 	dev.Clientset = origClient
+}
+
+func TestRunGC_ListError(t *testing.T) {
+	setupNodeEnv()
+	pod.NewCollector(15)
+
+	fakeClient := fake.NewSimpleClientset()
+	fakeClient.Fake.PrependReactor("list", "nodes", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("simulated list error")
+	})
+	origClient := dev.Clientset
+	dev.Clientset = fakeClient
+	defer func() { dev.Clientset = origClient }()
+
+	n := &Node{
+		Set:             mapset.NewSet[string](),
+		KubeletEndpoint: &sync.Map{},
+	}
+	n.Set.Add("tracked-node")
+
+	n.runGC(500)
+
+	if !n.Set.Contains("tracked-node") {
+		t.Error("expected tracked-node to remain after list error")
+	}
 }
 
 func TestRunGC_WithScrapeFromKubelet(t *testing.T) {

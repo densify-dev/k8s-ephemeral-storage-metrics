@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -146,6 +147,9 @@ func ServeMetrics(addr string, handler http.Handler) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if err := srv.ListenAndServe(); err != nil {
+		if errors.Is(err, http.ErrServerClosed) {
+			return
+		}
 		log.Error().Msg(fmt.Sprintf("Listener Failed : %s\n", err.Error()))
 		panic(err.Error())
 	}

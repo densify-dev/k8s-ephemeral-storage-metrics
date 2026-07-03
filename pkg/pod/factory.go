@@ -102,8 +102,8 @@ func (cr Collector) runGC(batchSize int64) {
 		)
 		if err != nil {
 			log.Error().Msgf("Error getting pods: %v", err)
-			// Exit this GC cycle on error
-			break
+			// Exit this GC cycle on error; partial data must not evict tracked pods.
+			return
 		}
 
 		// Collect pod names from this batch

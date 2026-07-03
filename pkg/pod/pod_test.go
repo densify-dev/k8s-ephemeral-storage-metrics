@@ -30,13 +30,26 @@ func setupPodMetrics() {
 		origClient := dev.Clientset
 		dev.Clientset = fakeClient
 
-		os.Setenv("EPHEMERAL_STORAGE_POD_USAGE", "true")
-		os.Setenv("EPHEMERAL_STORAGE_CONTAINER_VOLUME_USAGE", "true")
-		os.Setenv("EPHEMERAL_STORAGE_CONTAINER_LIMIT_PERCENTAGE", "true")
-		os.Setenv("EPHEMERAL_STORAGE_CONTAINER_VOLUME_LIMITS_PERCENTAGE", "true")
-		os.Setenv("EPHEMERAL_STORAGE_CONTAINER_ROOTFS_USAGE", "true")
-		os.Setenv("EPHEMERAL_STORAGE_CONTAINER_LOGS_USAGE", "true")
-		os.Setenv("EPHEMERAL_STORAGE_INODES", "true")
+		envKeys := []string{
+			"EPHEMERAL_STORAGE_POD_USAGE",
+			"EPHEMERAL_STORAGE_CONTAINER_VOLUME_USAGE",
+			"EPHEMERAL_STORAGE_CONTAINER_LIMIT_PERCENTAGE",
+			"EPHEMERAL_STORAGE_CONTAINER_VOLUME_LIMITS_PERCENTAGE",
+			"EPHEMERAL_STORAGE_CONTAINER_ROOTFS_USAGE",
+			"EPHEMERAL_STORAGE_CONTAINER_LOGS_USAGE",
+			"EPHEMERAL_STORAGE_INODES",
+		}
+		origEnv := make(map[string]*string, len(envKeys))
+		for _, key := range envKeys {
+			value, ok := os.LookupEnv(key)
+			if ok {
+				valueCopy := value
+				origEnv[key] = &valueCopy
+			} else {
+				origEnv[key] = nil
+			}
+			os.Setenv(key, "true")
+		}
 		c := NewCollector(15)
 
 		// Wait for initGetPodsData to finish
@@ -45,9 +58,13 @@ func setupPodMetrics() {
 		time.Sleep(50 * time.Millisecond)
 		// ponytail: podWatch goroutine leaks; process exit cleans up
 		dev.Clientset = origClient
-		// Restore env to avoid goroutine triggers in subsequent tests
-		os.Setenv("EPHEMERAL_STORAGE_CONTAINER_LIMIT_PERCENTAGE", "false")
-		os.Setenv("EPHEMERAL_STORAGE_CONTAINER_VOLUME_LIMITS_PERCENTAGE", "false")
+		for _, key := range envKeys {
+			if value := origEnv[key]; value != nil {
+				os.Setenv(key, *value)
+				continue
+			}
+			os.Unsetenv(key)
+		}
 	})
 }
 
@@ -515,12 +532,12 @@ func TestSetMetrics_PodUsage(t *testing.T) {
 	podGaugeVec.Reset()
 
 	c := Collector{
-		podUsage:                  true,
-		containerVolumeUsage:      false,
-		containerLimitsPercentage: false,
+		podUsage:                        true,
+		containerVolumeUsage:            false,
+		containerLimitsPercentage:       false,
 		containerVolumeLimitsPercentage: false,
-		lookup:                    &map[string]pod{},
-		lookupMutex:               &sync.RWMutex{},
+		lookup:                          &map[string]pod{},
+		lookupMutex:                     &sync.RWMutex{},
 	}
 
 	c.SetMetrics("test-pod", "ns1", "node1", 1024, 2048, 4096, 100, 50, 50, nil, nil)
@@ -544,13 +561,13 @@ func TestSetMetrics_Inodes(t *testing.T) {
 	inodesUsedGaugeVec.Reset()
 
 	c := Collector{
-		podUsage:                  false,
-		containerVolumeUsage:      false,
-		containerLimitsPercentage: false,
+		podUsage:                        false,
+		containerVolumeUsage:            false,
+		containerLimitsPercentage:       false,
 		containerVolumeLimitsPercentage: false,
-		inodes:                    true,
-		lookup:                    &map[string]pod{},
-		lookupMutex:               &sync.RWMutex{},
+		inodes:                          true,
+		lookup:                          &map[string]pod{},
+		lookupMutex:                     &sync.RWMutex{},
 	}
 
 	c.SetMetrics("test-pod", "ns1", "node1", 0, 0, 0, 1000, 500, 500, nil, nil)
@@ -596,12 +613,12 @@ func TestSetMetrics_ContainerVolumeUsage(t *testing.T) {
 	}
 
 	c := Collector{
-		podUsage:                  false,
-		containerVolumeUsage:      true,
-		containerLimitsPercentage: false,
+		podUsage:                        false,
+		containerVolumeUsage:            true,
+		containerLimitsPercentage:       false,
 		containerVolumeLimitsPercentage: false,
-		lookup:                    &lookupData,
-		lookupMutex:               &sync.RWMutex{},
+		lookup:                          &lookupData,
+		lookupMutex:                     &sync.RWMutex{},
 	}
 
 	volumes := []Volume{
@@ -754,13 +771,13 @@ func TestSetMetrics_ContainerRootfsUsage(t *testing.T) {
 	containerRootfsCapacityBytesVec.Reset()
 
 	c := Collector{
-		podUsage:                  false,
-		containerVolumeUsage:      false,
-		containerLimitsPercentage: false,
+		podUsage:                        false,
+		containerVolumeUsage:            false,
+		containerLimitsPercentage:       false,
 		containerVolumeLimitsPercentage: false,
-		containerRootfsUsage:      true,
-		lookup:                    &map[string]pod{},
-		lookupMutex:               &sync.RWMutex{},
+		containerRootfsUsage:            true,
+		lookup:                          &map[string]pod{},
+		lookupMutex:                     &sync.RWMutex{},
 	}
 
 	containers := []ContainerStats{
@@ -802,13 +819,13 @@ func TestSetMetrics_ContainerLogsUsage(t *testing.T) {
 	containerLogsCapacityBytesVec.Reset()
 
 	c := Collector{
-		podUsage:                  false,
-		containerVolumeUsage:      false,
-		containerLimitsPercentage: false,
+		podUsage:                        false,
+		containerVolumeUsage:            false,
+		containerLimitsPercentage:       false,
 		containerVolumeLimitsPercentage: false,
-		containerLogsUsage:        true,
-		lookup:                    &map[string]pod{},
-		lookupMutex:               &sync.RWMutex{},
+		containerLogsUsage:              true,
+		lookup:                          &map[string]pod{},
+		lookupMutex:                     &sync.RWMutex{},
 	}
 
 	containers := []ContainerStats{
@@ -850,9 +867,9 @@ func TestEvictPodByName(t *testing.T) {
 
 	// Set some metrics first
 	c := Collector{
-		podUsage: true,
-		inodes:   true,
-		lookup:   &map[string]pod{},
+		podUsage:    true,
+		inodes:      true,
+		lookup:      &map[string]pod{},
 		lookupMutex: &sync.RWMutex{},
 	}
 	c.SetMetrics("evict-me", "ns1", "node1", 100, 200, 300, 10, 5, 5, nil, nil)
@@ -884,8 +901,8 @@ func TestEvictPodByNode(t *testing.T) {
 
 	// Set metrics for pods on a specific node
 	c := Collector{
-		podUsage: true,
-		lookup:   &map[string]pod{},
+		podUsage:    true,
+		lookup:      &map[string]pod{},
 		lookupMutex: &sync.RWMutex{},
 	}
 	c.SetMetrics("pod1", "ns1", "bad-node", 100, 0, 0, 0, 0, 0, nil, nil)
@@ -920,12 +937,12 @@ func TestEvictPodByNode(t *testing.T) {
 
 func TestSetMetrics_PodNotInLookup_AddedToLookup(t *testing.T) {
 	c := Collector{
-		podUsage:                  true,
-		containerVolumeUsage:      false,
-		containerLimitsPercentage: false,
+		podUsage:                        true,
+		containerVolumeUsage:            false,
+		containerLimitsPercentage:       false,
 		containerVolumeLimitsPercentage: false,
-		lookup:                    &map[string]pod{},
-		lookupMutex:               &sync.RWMutex{},
+		lookup:                          &map[string]pod{},
+		lookupMutex:                     &sync.RWMutex{},
 	}
 
 	c.SetMetrics("new-pod", "ns1", "node1", 100, 0, 0, 0, 0, 0, nil, nil)
@@ -1018,13 +1035,21 @@ func TestRunGC_ListError(t *testing.T) {
 	dev.Clientset = fakeClient
 	defer func() { dev.Clientset = origClient }()
 
+	lookup := map[string]pod{
+		"tracked-pod": {},
+	}
 	c := Collector{
-		lookup:      &map[string]pod{},
+		lookup:      &lookup,
 		lookupMutex: &sync.RWMutex{},
 	}
 
-	// Should not panic, just log and return
 	c.runGC(500)
+
+	c.lookupMutex.RLock()
+	defer c.lookupMutex.RUnlock()
+	if _, ok := lookup["tracked-pod"]; !ok {
+		t.Error("expected tracked-pod to remain after list error")
+	}
 }
 
 func TestGcMetrics_NoPanic(t *testing.T) {

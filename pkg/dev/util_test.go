@@ -148,11 +148,20 @@ func TestEnablePprof_StartsServer(t *testing.T) {
 }
 
 func TestEnablePprof_DoubleStart(t *testing.T) {
-	// ponytail: second EnablePprof hits port conflict, covering error path
-	// First one is already running from TestEnablePprof_StartsServer
+	// Start once.
 	go EnablePprof()
 	time.Sleep(100 * time.Millisecond)
-	// Second call should log error but not panic (ListenAndServe just returns err)
+
+	resp, err := http.Get("http://localhost:6060/debug/pprof/")
+	if err != nil {
+		t.Skipf("pprof server not reachable (port may be in use): %v", err)
+		return
+	}
+	resp.Body.Close()
+
+	// Second start should hit port conflict and return without panicking.
+	go EnablePprof()
+	time.Sleep(100 * time.Millisecond)
 }
 
 func TestConfigureK8sClient_Defaults(t *testing.T) {

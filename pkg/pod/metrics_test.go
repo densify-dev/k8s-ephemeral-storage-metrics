@@ -102,6 +102,15 @@ func TestRootfsLogsMetrics(t *testing.T) {
 		cr.SetMetrics("p1", "ns1", "n1", 0, 0, 0, 0, 0, 0, nil, containers)
 
 		expected := strings.NewReader(`
+			# HELP ephemeral_storage_container_logs_available_bytes Current logs bytes available to a container in a pod
+			# TYPE ephemeral_storage_container_logs_available_bytes gauge
+			ephemeral_storage_container_logs_available_bytes{container="c1",node_name="n1",pod_name="p1",pod_namespace="ns1"} 5000
+			# HELP ephemeral_storage_container_logs_capacity_bytes Current logs bytes capacity for a container in a pod
+			# TYPE ephemeral_storage_container_logs_capacity_bytes gauge
+			ephemeral_storage_container_logs_capacity_bytes{container="c1",node_name="n1",pod_name="p1",pod_namespace="ns1"} 8000
+			# HELP ephemeral_storage_container_logs_used_bytes Current logs bytes used by a container in a pod
+			# TYPE ephemeral_storage_container_logs_used_bytes gauge
+			ephemeral_storage_container_logs_used_bytes{container="c1",node_name="n1",pod_name="p1",pod_namespace="ns1"} 3000
 			# HELP ephemeral_storage_container_rootfs_usage_percentage Percentage of rootfs capacity used by a container in a pod
 			# TYPE ephemeral_storage_container_rootfs_usage_percentage gauge
 			ephemeral_storage_container_rootfs_usage_percentage{container="c1",node_name="n1",pod_name="p1",pod_namespace="ns1"} 25
@@ -129,6 +138,9 @@ func TestRootfsLogsMetrics(t *testing.T) {
 		`)
 
 		metricNames := []string{
+			"ephemeral_storage_container_logs_available_bytes",
+			"ephemeral_storage_container_logs_capacity_bytes",
+			"ephemeral_storage_container_logs_used_bytes",
 			"ephemeral_storage_container_rootfs_usage_percentage",
 			"ephemeral_storage_container_logs_usage_percentage",
 			"ephemeral_storage_container_rootfs_inodes",

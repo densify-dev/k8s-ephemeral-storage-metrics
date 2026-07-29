@@ -1,30 +1,34 @@
-## Release Instructions (Image Only)
+## Image release
 
-### 1. Pick the release tag
-Use semver (`X.Y.Z`) for stable releases and `X.Y.Z-rcNN` for release candidates.
+### 1. Pick release tag
 
-```bash
-export T=1.20.0
-```
-
-### 2. Commit any pending release changes
+Use `X.Y.Z` or `vX.Y.Z` for stable releases. Use SemVer prerelease suffixes,
+such as `vX.Y.Z-rc.1`, for release candidates. Build metadata (`+...`) is not
+supported because Docker tags cannot contain `+`.
 
 ```bash
-git commit -a -m "release $T"
+export T=v1.21.3
 ```
 
-### 3. Create and push the tag
-Pushing the tag triggers `.github/workflows/release-tag.yml`.
+### 2. Create and push tag
+
+Pushing tag triggers `.github/workflows/release-tag.yml`.
 
 ```bash
 git tag "$T"
 git push origin "$T"
 ```
 
-### 4. Verify the workflow run
-Check the GitHub Actions run for that tag completed and image artifacts were pushed.
+### 3. Verify release
 
-## Registry Configuration
+Confirm GitHub Actions run succeeds and image reaches Docker Hub. Stable tags
+also update `latest`; prerelease tags do not.
 
-- Docker Hub is the only supported release registry.
-- Set `DOCKER_USERNAME` and `DOCKER_PASSWORD` secrets.
+## Registry configuration
+
+- `DOCKER_USERNAME` and `DOCKER_PASSWORD` secrets are required.
+- Optional `DOCKER_IMAGE_REPO` repository variable overrides default
+  `docker.io/${DOCKER_USERNAME}/k8s-ephemeral-storage-metrics` target.
+
+Helm chart releases happen separately in
+[`densify-dev/helm-charts`](https://github.com/densify-dev/helm-charts/tree/master/charts/k8s-ephemeral-storage-metrics).

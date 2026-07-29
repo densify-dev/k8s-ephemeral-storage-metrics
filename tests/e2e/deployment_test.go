@@ -125,12 +125,22 @@ func checkPrometheus(checkSlice []string, inverse bool) {
 func WatchContainerPercentage() {
 	status := 0
 	re := regexp.MustCompile(`ephemeral_storage_container_limit_percentage{container="grow-test",node_name="minikube".+,pod_namespace="ephemeral-metrics",source="container"}\s+(.+)`)
-	output := requestPrometheusString()
-	match := re.FindAllStringSubmatch(output, -1)
-	gomega.Expect(match).ShouldNot(gomega.BeEmpty())
-	floatValue, _ := strconv.ParseFloat(match[0][1], 64)
-	if floatValue < 100.0 {
-		status = 1
+	timeout := time.Second * 180
+	startTime := time.Now()
+	for {
+		if time.Since(startTime) >= timeout {
+			break
+		}
+		output := requestPrometheusString()
+		match := re.FindAllStringSubmatch(output, -1)
+		if match != nil {
+			floatValue, _ := strconv.ParseFloat(match[0][1], 64)
+			if floatValue < 100.0 {
+				status = 1
+				break
+			}
+		}
+		time.Sleep(time.Second)
 	}
 	gomega.Expect(status).Should(gomega.Equal(1))
 
@@ -138,24 +148,23 @@ func WatchContainerPercentage() {
 
 func WatchContainerVolumePercentage() {
 	status := 0
+	re := regexp.MustCompile(`ephemeral_storage_container_volume_limit_percentage{container="shrink-test",mount_path="\/cache".+volume_name="cache-volume-1"}\s+(.+)`)
 	timeout := time.Second * 180
 	startTime := time.Now()
 	for {
-		elapsed := time.Since(startTime)
-		if elapsed >= timeout {
+		if time.Since(startTime) >= timeout {
 			break
 		}
-		re := regexp.MustCompile(`ephemeral_storage_container_volume_limit_percentage{container="shrink-test",mount_path="\/cache".+volume_name="cache-volume-1"}\s+(.+)`)
 		output := requestPrometheusString()
 		match := re.FindAllStringSubmatch(output, -1)
-		if match == nil {
-			continue
+		if match != nil {
+			floatValue, _ := strconv.ParseFloat(match[0][1], 64)
+			if floatValue < 100.0 {
+				status = 1
+				break
+			}
 		}
-		floatValue, _ := strconv.ParseFloat(match[0][1], 64)
-		if floatValue < 100.0 {
-			status = 1
-			break
-		}
+		time.Sleep(time.Second)
 	}
 	gomega.Expect(status).Should(gomega.Equal(1))
 
@@ -164,11 +173,22 @@ func WatchContainerVolumePercentage() {
 func WatchNodePercentage() {
 	status := 0
 	re := regexp.MustCompile(`ephemeral_storage_node_percentage\{node_name="minikube"}\s+(.+)`)
-	output := requestPrometheusString()
-	match := re.FindAllStringSubmatch(output, -1)
-	floatValue, _ := strconv.ParseFloat(match[0][1], 64)
-	if floatValue < 100.0 {
-		status = 1
+	timeout := time.Second * 180
+	startTime := time.Now()
+	for {
+		if time.Since(startTime) >= timeout {
+			break
+		}
+		output := requestPrometheusString()
+		match := re.FindAllStringSubmatch(output, -1)
+		if match != nil {
+			floatValue, _ := strconv.ParseFloat(match[0][1], 64)
+			if floatValue < 100.0 {
+				status = 1
+				break
+			}
+		}
+		time.Sleep(time.Second)
 	}
 	gomega.Expect(status).Should(gomega.Equal(1))
 
@@ -203,6 +223,9 @@ func getPodUsageSize(podName string) float64 {
 	output := requestPrometheusString()
 	re := regexp.MustCompile(fmt.Sprintf(`ephemeral_storage_pod_usage.+pod_name="%s.+\}\s(.+)`, podName))
 	match := re.FindAllStringSubmatch(output, 2)
+	if match == nil {
+		return 0
+	}
 	currentPodSize, _ := strconv.ParseFloat(match[0][1], 64)
 	return currentPodSize
 }
@@ -211,6 +234,9 @@ func getContainerLimitPercentage(podName string) float64 {
 	output := requestPrometheusString()
 	re := regexp.MustCompile(fmt.Sprintf(`ephemeral_storage_container_limit_percentage.+pod_name="%s.+\}\s(.+)`, podName))
 	match := re.FindAllStringSubmatch(output, 2)
+	if match == nil {
+		return 0
+	}
 	currentPodSize, _ := strconv.ParseFloat(match[0][1], 64)
 	return currentPodSize
 }
@@ -221,6 +247,9 @@ func getContainerVolumeLimitPercentage(podName string) float64 {
 		fmt.Sprintf(`ephemeral_storage_container_volume_limit_percentage.+container="%s",mount_path="\/cache".+\}\s(.+)`,
 			podName))
 	match := re.FindAllStringSubmatch(output, 2)
+	if match == nil {
+		return 0
+	}
 	currentPodSize, _ := strconv.ParseFloat(match[0][1], 64)
 	return currentPodSize
 }
@@ -231,6 +260,21 @@ func getContainerVolumeUsage(podName string) float64 {
 		fmt.Sprintf(`ephemeral_storage_container_volume_usage.+container="%s",mount_path="\/cache".+\}\s(.+)`,
 			podName))
 	match := re.FindAllStringSubmatch(output, 2)
+	if match == nil {
+		return 0
+	}
+	currentPodSize, _ := strconv.ParseFloat(match[0][1], 64)
+	return currentPodSize
+}
+
+func getContainerRootfsUsedBytes(podName string) float64 {
+	output := requestPrometheusString()
+	re := regexp.MustCompile(
+		fmt.Sprintf(`ephemeral_storage_container_rootfs_used_bytes.+container="%s".+\}\s(.+)`, podName))
+	match := re.FindAllStringSubmatch(output, 2)
+	if match == nil {
+		return 0
+	}
 	currentPodSize, _ := strconv.ParseFloat(match[0][1], 64)
 	return currentPodSize
 }
@@ -313,6 +357,36 @@ func destroyManyPods() {
 
 }
 
+func nodeDisconnect() {
+	cmd := exec.Command("make", "minikube_node2_stop")
+	cmd.Dir = "../.."
+
+	_, err := cmd.Output()
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+
+}
+
+func nodeReconnect() {
+	cmd := exec.Command("make", "minikube_node2_start")
+	cmd.Dir = "../.."
+
+	_, err := cmd.Output()
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+
+}
+
+var scalingCheckSlice = []string{
+	"node_name=\"minikube-m02",
+	"ephemeral_storage_container_limit_percentage{container=\"kube-proxy\",node_name=\"minikube-m02\"",
+	"ephemeral_storage_inodes{node_name=\"minikube-m02\"",
+	"ephemeral_storage_inodes_free{node_name=\"minikube-m02\"",
+	"ephemeral_storage_inodes_used{node_name=\"minikube-m02\"",
+}
+
+var _ = ginkgo.BeforeSuite(func() {
+	scaleUp()
+})
+
 var _ = ginkgo.Describe("Test Metrics\n", func() {
 
 	ginkgo.Context("Observe labels\n", func() {
@@ -331,6 +405,20 @@ var _ = ginkgo.Describe("Test Metrics\n", func() {
 				"ephemeral_storage_inodes",
 				"ephemeral_storage_inodes_free",
 				"ephemeral_storage_inodes_used",
+				"ephemeral_storage_container_rootfs_used_bytes",
+				"ephemeral_storage_container_rootfs_available_bytes",
+				"ephemeral_storage_container_rootfs_capacity_bytes",
+				"ephemeral_storage_container_logs_used_bytes",
+				"ephemeral_storage_container_logs_available_bytes",
+				"ephemeral_storage_container_logs_capacity_bytes",
+				"ephemeral_storage_container_rootfs_usage_percentage",
+				"ephemeral_storage_container_logs_usage_percentage",
+				"ephemeral_storage_container_rootfs_inodes",
+				"ephemeral_storage_container_rootfs_inodes_free",
+				"ephemeral_storage_container_rootfs_inodes_used",
+				"ephemeral_storage_container_logs_inodes",
+				"ephemeral_storage_container_logs_inodes_free",
+				"ephemeral_storage_container_logs_inodes_used",
 			)
 			checkPrometheus(checkSlice, false)
 		})
@@ -384,6 +472,14 @@ var _ = ginkgo.Describe("Test Metrics\n", func() {
 			WatchEphemeralSize("shrink-test", 100000, time.Second*180, getContainerVolumeUsage)
 		})
 	})
+	ginkgo.Context("Observe change in ephemeral_storage_container_rootfs_used_bytes metric\n", func() {
+		ginkgo.Specify("\nWatch Pod grow to 0.2 percent", func() {
+			WatchEphemeralSize("grow-test", 100000, time.Second*180, getContainerRootfsUsedBytes)
+		})
+		ginkgo.Specify("\nWatch Pod shrink to 0.2 percent", func() {
+			WatchEphemeralSize("shrink-test", 100000, time.Second*180, getContainerRootfsUsedBytes)
+		})
+	})
 	ginkgo.Context("\nMake sure percentage is not over 100", func() {
 		ginkgo.Specify("\nTest ephemeral_storage_node_percentage", func() {
 			WatchNodePercentage()
@@ -396,21 +492,34 @@ var _ = ginkgo.Describe("Test Metrics\n", func() {
 		})
 	})
 	ginkgo.Context("Test Scaling\n", func() {
-		checkSlice := []string{
-			"node_name=\"minikube-m02",
-			"ephemeral_storage_container_limit_percentage{container=\"kube-proxy\",node_name=\"minikube-m02\"",
-		}
-		ginkgo.Specify("\nScale up test to make sure pods and nodes are found", func() {
-			scaleUp()
-			checkPrometheus(checkSlice, false)
-		})
-		ginkgo.Specify("\nScale Down test to make sure pods and nodes are evicted", func() {
-			scaleDown()
-			checkPrometheus(checkSlice, true)
+		ginkgo.Specify("\nVerify pods and nodes are found after scale up", func() {
+			checkPrometheus(scalingCheckSlice, false)
 		})
 	})
-	ginkgo.Context("Test Garbage Collection\n", func() {
-		ginkgo.Specify("\nPod GC: Deploy pods, verify metrics exist, delete pods, verify metrics are garbage collected", func() {
+	ginkgo.Context("Test Node Disconnect Inode Leak\n", func() {
+		// Reconnect m02 after the disconnect test so subsequent contexts
+		// (Scrape-Driven Eviction, Scale Down) see a healthy cluster.
+		ginkgo.AfterEach(nodeReconnect)
+		ginkgo.Specify("\nStop node m02, assert EvictPodByNode cleans inode metrics (regression for Bug 1)", func() {
+			nodeDisconnect()
+			// Regression: inode metrics should be ABSENT after node unreachable.
+			// Bug 1 caused EvictPodByNode to skip inodesGaugeVec/inodesFreeGaugeVec/inodesUsedGaugeVec,
+			// leaking these metrics. Bug 1 is now fixed.
+			leakCheckSlice := []string{
+				"ephemeral_storage_inodes{node_name=\"minikube-m02\"",
+				"ephemeral_storage_inodes_free{node_name=\"minikube-m02\"",
+				"ephemeral_storage_inodes_used{node_name=\"minikube-m02\"",
+			}
+			checkPrometheus(leakCheckSlice, true)
+			// Sanity check: node-level metrics ABSENT after EvictPodByNode (proves evict ran).
+			evictCheckSlice := []string{
+				"ephemeral_storage_node_percentage{node_name=\"minikube-m02\"",
+			}
+			checkPrometheus(evictCheckSlice, true)
+		})
+	})
+	ginkgo.Context("Test Scrape-Driven Eviction\n", func() {
+		ginkgo.Specify("\nPod eviction: Deploy pods, verify metrics exist, delete pods, verify metrics are scraped-evicted", func() {
 			// Deploy many pods to create metrics
 			deployManyPods()
 
@@ -423,13 +532,20 @@ var _ = ginkgo.Describe("Test Metrics\n", func() {
 			// Delete the many-pods deployment
 			destroyManyPods()
 
-			// Wait for GC to run (gc_interval is 1 minute, add buffer for safety)
-			// GC runs every 1 minute, so wait 90 seconds to ensure it runs at least once
-			ginkgo.GinkgoWriter.Printf("\nWaiting 90 seconds for garbage collection to remove pod metrics...\n")
+			// Wait for scrape-driven eviction: at interval=5s with tolerance=2, pods are evicted after ~15s.
+			// Wait 90 seconds for safety margin.
+			ginkgo.GinkgoWriter.Printf("\nWaiting 90 seconds for scrape-driven eviction to remove pod metrics...\n")
 			time.Sleep(90 * time.Second)
 
 			// Verify metrics for many-pods namespace are removed
 			checkPrometheus(manyPodsCheckSlice, true)
+		})
+	})
+	ginkgo.Context("Test Scale Down\n", func() {
+		ginkgo.Specify("\nScale Down test to make sure pods and nodes are evicted", func() {
+			nodeReconnect()
+			scaleDown()
+			checkPrometheus(scalingCheckSlice, true)
 		})
 	})
 })

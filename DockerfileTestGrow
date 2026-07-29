@@ -1,6 +1,6 @@
 FROM docker.io/ubuntu:22.04
 RUN apt-get update -y && apt-get install watch
-LABEL org.opencontainers.image.source="https://github.com/jmcgrath207/k8s-ephemeral-storage-metrics"
+LABEL org.opencontainers.image.source="https://github.com/densify-dev/k8s-ephemeral-storage-metrics"
 
 COPY tests/scripts/growing_epheremal_storage.sh growing_epheremal_storage.sh
 

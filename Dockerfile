@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM --platform=${BUILDPLATFORM:-linux/amd64} docker.io/golang:1.25.5 AS builder
+FROM --platform=${BUILDPLATFORM:-linux/amd64} docker.io/golang:1.26.5 AS builder
 
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
@@ -18,7 +18,7 @@ RUN go mod download
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o app ./cmd/app/main.go
 
 FROM --platform=${BUILDPLATFORM:-linux/amd64} gcr.io/distroless/static:nonroot
-LABEL org.opencontainers.image.source="https://github.com/jmcgrath207/k8s-ephemeral-storage-metrics"
+LABEL org.opencontainers.image.source="https://github.com/densify-dev/k8s-ephemeral-storage-metrics"
 WORKDIR /
 COPY --from=builder /code/app .
 USER 65532:65532

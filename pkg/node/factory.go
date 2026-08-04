@@ -1,16 +1,13 @@
 package node
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strconv"
 	"sync"
-	"time"
 
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/rs/zerolog/log"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/jmcgrath207/k8s-ephemeral-storage-metrics/pkg/dev"
 )
@@ -29,6 +26,7 @@ type Node struct {
 	sampleInterval          int64
 	scrapeFromKubelet       bool
 	kubeletReadOnlyPort     int
+	nodeLabelSelector       string
 	Set                     mapset.Set[string]
 	KubeletEndpoint         *sync.Map // key=nodeName val=kubeletEndpoint
 	WaitGroup               *sync.WaitGroup
@@ -44,6 +42,7 @@ func NewCollector(sampleInterval int64) Node {
 	maxNodeQueryConcurrency, _ := strconv.Atoi(dev.GetEnv("MAX_NODE_CONCURRENCY", "10"))
 	scrapeFromKubelet, _ := strconv.ParseBool(dev.GetEnv("SCRAPE_FROM_KUBELET", "false"))
 	kubeletReadOnlyPort, _ := strconv.Atoi(dev.GetEnv("KUBELET_READONLY_PORT", "0"))
+	nodeLabelSelector := dev.GetEnv("NODE_LABEL_SELECTOR", "")
 	set := mapset.NewSet[string]()
 	mp := &sync.Map{}
 
@@ -62,83 +61,40 @@ func NewCollector(sampleInterval int64) Node {
 		sampleInterval:          sampleInterval,
 		scrapeFromKubelet:       scrapeFromKubelet,
 		kubeletReadOnlyPort:     kubeletReadOnlyPort,
+		nodeLabelSelector:       nodeLabelSelector,
 		Set:                     set,
 		KubeletEndpoint:         mp,
 		WaitGroup:               &waitGroup,
 	}
 	node.createMetrics()
 
-	gcEnabled, _ := strconv.ParseBool(dev.GetEnv("GC_ENABLED", "false"))
-	gcInterval, _ := strconv.ParseInt(dev.GetEnv("GC_INTERVAL", "5"), 10, 64)
-	gcBatchSize, _ := strconv.ParseInt(dev.GetEnv("GC_BATCH_SIZE", "500"), 10, 64)
-	if gcEnabled {
-		go node.gcMetrics(gcInterval, gcBatchSize)
-	}
-
 	if node.deployType != "Deployment" {
 		node.Set.Add(dev.GetEnv("CURRENT_NODE_NAME", ""))
-	} else {
-		go node.Watch()
 	}
 
 	return node
 }
 
-func (n Node) gcMetrics(interval int64, batchSize int64) {
-	ticker := time.NewTicker(time.Duration(interval) * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			n.runGC(batchSize)
-		}
-	}
+// watchStarter is the function StartWatch uses to begin watching. It is a
+// package variable so tests can substitute a lightweight stand-in and
+// observe exactly when watching begins, instead of driving a real informer
+// against a Kubernetes API server.
+var watchStarter = func(n *Node) { n.Watch() }
+
+// SetWatchStarter overrides the function StartWatch uses to begin watching
+// and returns a func that restores the previous behavior. It exists so
+// tests can observe StartWatch invocations deterministically without
+// running a real informer.
+func SetWatchStarter(f func(n *Node)) (restore func()) {
+	prev := watchStarter
+	watchStarter = f
+	return func() { watchStarter = prev }
 }
 
-// runGC is the inner GC logic, extracted for testability.
-func (n Node) runGC(batchSize int64) {
-	log.Info().Msgf("Starting GC for nodes in batches of %d", batchSize)
-	currentNodes := make(map[string]struct{})
-	paginationContinue := ""
-
-	for {
-		nodes, err := dev.Clientset.CoreV1().Nodes().List(
-			context.Background(),
-			metav1.ListOptions{
-				Limit:    batchSize,
-				Continue: paginationContinue,
-			},
-		)
-		if err != nil {
-			log.Error().Msgf("Error getting nodes: %v", err)
-			// Exit this GC cycle on error; partial data must not evict tracked nodes.
-			return
-		}
-
-		// Collect pod names from this batch
-		for _, n := range nodes.Items {
-			currentNodes[n.Name] = struct{}{}
-		}
-
-		if nodes.Continue != "" {
-			paginationContinue = nodes.Continue
-		} else {
-			// All batches processed
-			break
-		}
+// StartWatch starts the node informer in Deployment mode after dependent
+// metrics are initialized.
+func (n *Node) StartWatch() {
+	if n.deployType == "Deployment" {
+		go watchStarter(n)
 	}
-	log.Info().Msgf("Found %d current nodes in cluster", len(currentNodes))
-
-	// Identify all nodes we have metrics for that no longer exist
-	for nodeName := range n.Set.Iter() {
-		if _, ok := currentNodes[nodeName]; !ok {
-			log.Info().Msgf("Garbage collector removing metrics for deleted node %s", nodeName)
-			n.evict(nodeName)
-			if n.scrapeFromKubelet {
-				n.KubeletEndpoint.Delete(nodeName)
-			}
-		}
-	}
-
-	log.Info().Msgf("Node GC cycle completed")
 }

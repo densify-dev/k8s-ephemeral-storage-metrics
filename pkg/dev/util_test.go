@@ -1,54 +1,176 @@
 package dev
 
 import (
-	"net/http"
+	"bytes"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/rs/zerolog"
 	"k8s.io/client-go/rest"
 )
 
-func TestGetEnv_UnsetReturnsFallback(t *testing.T) {
-	os.Unsetenv("TEST_GETENV_UNSET")
-	got := GetEnv("TEST_GETENV_UNSET", "fallback_val")
-	if got != "fallback_val" {
-		t.Errorf("GetEnv(unset) = %q, want %q", got, "fallback_val")
+func TestGetK8sConfigFromEnv_Unset(t *testing.T) {
+	os.Unsetenv("KUBECONFIG")
+	cfg, err := getK8sConfigFromEnv()
+	if err != nil {
+		t.Errorf("expected nil error when KUBECONFIG unset, got %v", err)
+	}
+	if cfg != nil {
+		t.Errorf("expected nil config when KUBECONFIG unset, got %v", cfg)
 	}
 }
 
-func TestGetEnv_SetReturnsValue(t *testing.T) {
-	os.Setenv("TEST_GETENV_SET", "custom_val")
-	defer os.Unsetenv("TEST_GETENV_SET")
-	got := GetEnv("TEST_GETENV_SET", "fallback_val")
-	if got != "custom_val" {
-		t.Errorf("GetEnv(set) = %q, want %q", got, "custom_val")
+func TestGetK8sConfigFromEnv_ValidPath(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfig := filepath.Join(dir, "config")
+	content := `apiVersion: v1
+kind: Config
+current-context: test
+clusters:
+- cluster:
+    server: https://localhost:6443
+  name: test-cluster
+contexts:
+- context:
+    cluster: test-cluster
+  name: test
+users:
+- name: test-user
+  user:
+    token: fake-token
+`
+	if err := os.WriteFile(kubeconfig, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfig)
+	cfg, err := getK8sConfigFromEnv()
+	if err != nil {
+		t.Fatalf("expected nil error for valid kubeconfig, got %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config for valid kubeconfig")
 	}
 }
 
-func TestGetEnv_EmptyStringReturnsEmpty(t *testing.T) {
-	os.Setenv("TEST_GETENV_EMPTY", "")
-	defer os.Unsetenv("TEST_GETENV_EMPTY")
-	got := GetEnv("TEST_GETENV_EMPTY", "fallback_val")
-	if got != "" {
-		t.Errorf("GetEnv(empty) = %q, want empty string", got)
+func TestGetK8sConfigFromEnv_InvalidPath(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/nonexistent/path/kubeconfig")
+	cfg, err := getK8sConfigFromEnv()
+	if err == nil {
+		t.Error("expected error for invalid kubeconfig path")
+	}
+	if cfg != nil {
+		t.Errorf("expected nil config on error, got %v", cfg)
 	}
 }
 
-func TestSetLogger_Levels(t *testing.T) {
-	levels := []string{"debug", "info", "warn", "error"}
-	for _, lvl := range levels {
-		os.Setenv("LOG_LEVEL", lvl)
-		defer os.Unsetenv("LOG_LEVEL")
-		// Should not panic
-		SetLogger()
+func TestGetK8sConfig_BadKubeconfigPath(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/nonexistent/path/kubeconfig")
+	_, err := getK8sConfig()
+	if err == nil {
+		t.Fatal("expected error for bad KUBECONFIG path")
 	}
+	if !strings.Contains(err.Error(), "KUBECONFIG set but invalid") {
+		t.Errorf("error should contain 'KUBECONFIG set but invalid', got: %v", err)
+	}
+}
+
+func TestGetK8sConfig_FallbackToInCluster(t *testing.T) {
+	os.Unsetenv("KUBECONFIG")
+	cfg, err := getK8sConfig()
+	if err != nil {
+		// Expected when not running in a cluster
+		t.Logf("getK8sConfig() fallback: %v (expected outside cluster)", err)
+		return
+	}
+	t.Log("got in-cluster config")
+	_ = cfg
+}
+
+func TestGetEnv(t *testing.T) {
+	t.Run("set returns value", func(t *testing.T) {
+		t.Setenv("TEST_KEY", "val")
+		got := GetEnv("TEST_KEY", "fallback")
+		if got != "val" {
+			t.Errorf("expected 'val', got %q", got)
+		}
+	})
+	t.Run("unset returns fallback", func(t *testing.T) {
+		os.Unsetenv("TEST_UNSET")
+		got := GetEnv("TEST_UNSET", "fall")
+		if got != "fall" {
+			t.Errorf("expected 'fall', got %q", got)
+		}
+	})
+	t.Run("empty returns empty", func(t *testing.T) {
+		t.Setenv("TEST_EMPTY", "")
+		got := GetEnv("TEST_EMPTY", "fallback")
+		if got != "" {
+			t.Errorf("expected '', got %q", got)
+		}
+	})
+}
+
+func TestDeployAsDaemonSet(t *testing.T) {
+	t.Run("unset defaults to DaemonSet", func(t *testing.T) {
+		os.Unsetenv("DEPLOY_TYPE")
+		if !DeployAsDaemonSet() {
+			t.Error("expected true when unset (default DaemonSet)")
+		}
+	})
+	t.Run("DaemonSet env returns true", func(t *testing.T) {
+		t.Setenv("DEPLOY_TYPE", "DaemonSet")
+		if !DeployAsDaemonSet() {
+			t.Error("expected true for DaemonSet")
+		}
+	})
+	t.Run("Deployment env returns false", func(t *testing.T) {
+		t.Setenv("DEPLOY_TYPE", "Deployment")
+		if DeployAsDaemonSet() {
+			t.Error("expected false for Deployment")
+		}
+	})
+	t.Run("empty string returns false", func(t *testing.T) {
+		t.Setenv("DEPLOY_TYPE", "")
+		if DeployAsDaemonSet() {
+			t.Error("expected false for empty")
+		}
+	})
+}
+
+func TestCurrentNodeName(t *testing.T) {
+	t.Run("unset returns empty", func(t *testing.T) {
+		os.Unsetenv("CURRENT_NODE_NAME")
+		if CurrentNodeName() != "" {
+			t.Error("expected empty when unset")
+		}
+	})
+	t.Run("returns env value", func(t *testing.T) {
+		t.Setenv("CURRENT_NODE_NAME", "node-x")
+		if CurrentNodeName() != "node-x" {
+			t.Errorf("expected 'node-x', got %q", CurrentNodeName())
+		}
+	})
+}
+
+func TestLineInfoHookRun(t *testing.T) {
+	var buf bytes.Buffer
+	logger := zerolog.New(&buf).Hook(LineInfoHook{})
+	logger.Info().Msg("test")
+	output := buf.String()
+	if !strings.Contains(output, ".go") {
+		t.Errorf("expected line info to contain .go, got: %s", output)
+	}
+}
+
+func TestSetLogger_ValidLevel(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "debug")
+	SetLogger()
 }
 
 func TestSetLogger_InvalidLevelPanics(t *testing.T) {
-	os.Setenv("LOG_LEVEL", "invalid_level")
-	defer os.Unsetenv("LOG_LEVEL")
+	t.Setenv("LOG_LEVEL", "garbage")
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic for invalid log level")
@@ -57,165 +179,73 @@ func TestSetLogger_InvalidLevelPanics(t *testing.T) {
 	SetLogger()
 }
 
-func TestGetEnv_Empty(t *testing.T) {
-	got := GetEnv("", "default")
-	if got != "default" {
-		t.Errorf("GetEnv(empty_key) = %q, want %q", got, "default")
-	}
-}
-
-func TestLineInfoHook_Run(t *testing.T) {
-	// Just verify LineInfoHook doesn't panic
-	h := LineInfoHook{}
-	l := zerolog.Nop()
-	e := l.Debug()
-	h.Run(e, zerolog.DebugLevel, "test message")
-}
-
 func TestSetScrapeFromKubelet(t *testing.T) {
-	// Test that setScrapeFromKubelet initializes HTTP clients with insecure=true
-	config := &rest.Config{
-		Host: "https://localhost:8443",
-		TLSClientConfig: rest.TLSClientConfig{
-			Insecure: false,
-		},
-	}
-	os.Setenv("SCRAPE_FROM_KUBELET_TLS_INSECURE_SKIP_VERIFY", "true")
-	defer os.Unsetenv("SCRAPE_FROM_KUBELET_TLS_INSECURE_SKIP_VERIFY")
+	origClientRaw := ClientRaw
+	origClientAno := ClientAno
+	t.Cleanup(func() {
+		ClientRaw = origClientRaw
+		ClientAno = origClientAno
+	})
 
+	t.Setenv("SCRAPE_FROM_KUBELET_TLS_INSECURE_SKIP_VERIFY", "true")
+	config := &rest.Config{Host: "https://localhost:6443"}
 	setScrapeFromKubelet(config)
-
 	if ClientRaw == nil {
-		t.Error("expected ClientRaw to be initialized")
+		t.Error("ClientRaw should not be nil")
 	}
 	if ClientAno == nil {
-		t.Error("expected ClientAno to be initialized")
-	}
-
-	// Reset
-	ClientRaw = nil
-	ClientAno = nil
-}
-
-func TestSetScrapeFromKubelet_InsecureFalse(t *testing.T) {
-	config := &rest.Config{
-		Host: "https://localhost:8443",
-		TLSClientConfig: rest.TLSClientConfig{
-			Insecure: false,
-		},
-	}
-	os.Setenv("SCRAPE_FROM_KUBELET_TLS_INSECURE_SKIP_VERIFY", "false")
-	defer os.Unsetenv("SCRAPE_FROM_KUBELET_TLS_INSECURE_SKIP_VERIFY")
-
-	setScrapeFromKubelet(config)
-
-	if ClientRaw == nil {
-		t.Error("expected ClientRaw to be initialized")
-	}
-	if ClientAno == nil {
-		t.Error("expected ClientAno to be initialized")
+		t.Error("ClientAno should not be nil")
 	}
 }
 
-func TestSetK8sClient_PanicsWithoutCluster(t *testing.T) {
-	// Ensure no k8s env is set
-	os.Unsetenv("KUBERNETES_SERVICE_HOST")
-	os.Unsetenv("KUBERNETES_SERVICE_PORT")
+func TestSetK8sClient(t *testing.T) {
+	origClientset := Clientset
+	origClientRaw := ClientRaw
+	origClientAno := ClientAno
+	t.Cleanup(func() {
+		Clientset = origClientset
+		ClientRaw = origClientRaw
+		ClientAno = origClientAno
+	})
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic when not in cluster")
+	dir := t.TempDir()
+	kubeconfig := filepath.Join(dir, "config")
+	content := `apiVersion: v1
+kind: Config
+current-context: test
+clusters:
+- cluster:
+    server: https://localhost:6443
+  name: test-cluster
+contexts:
+- context:
+    cluster: test-cluster
+  name: test
+users:
+- name: test-user
+  user:
+    token: fake-token
+`
+	if err := os.WriteFile(kubeconfig, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("creates Clientset from kubeconfig", func(t *testing.T) {
+		t.Setenv("KUBECONFIG", kubeconfig)
+		t.Setenv("CLIENT_GO_QPS", "10")
+		t.Setenv("CLIENT_GO_BURST", "20")
+		SetK8sClient()
+		if Clientset == nil {
+			t.Error("Clientset should not be nil")
 		}
-	}()
-	SetK8sClient()
-}
+	})
 
-func TestEnablePprof_StartsServer(t *testing.T) {
-	// ponytail: test that EnablePprof doesn't panic immediately
-	// Start in goroutine, check server starts, then goroutine leaks (process exit cleans up)
-	go EnablePprof()
-	time.Sleep(100 * time.Millisecond)
-
-	resp, err := http.Get("http://localhost:6060/debug/pprof/")
-	if err != nil {
-		t.Skipf("pprof server not reachable (port may be in use): %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
-	}
-}
-
-func TestEnablePprof_DoubleStart(t *testing.T) {
-	// Start once.
-	go EnablePprof()
-	time.Sleep(100 * time.Millisecond)
-
-	resp, err := http.Get("http://localhost:6060/debug/pprof/")
-	if err != nil {
-		t.Skipf("pprof server not reachable (port may be in use): %v", err)
-		return
-	}
-	resp.Body.Close()
-
-	// Second start should hit port conflict and return without panicking.
-	go EnablePprof()
-	time.Sleep(100 * time.Millisecond)
-}
-
-func TestConfigureK8sClient_Defaults(t *testing.T) {
-	config := rest.Config{Host: "https://localhost:8443"}
-	ConfigureK8sClient(&config)
-	if Clientset == nil {
-		t.Error("expected Clientset to be initialized")
-	}
-	Clientset = nil
-}
-
-func TestConfigureK8sClient_QPS(t *testing.T) {
-	os.Setenv("CLIENT_GO_QPS", "42")
-	defer os.Unsetenv("CLIENT_GO_QPS")
-
-	config := rest.Config{Host: "https://localhost:8443"}
-	ConfigureK8sClient(&config)
-	if Clientset == nil {
-		t.Error("expected Clientset to be initialized")
-	}
-	if config.QPS != 42 {
-		t.Errorf("expected QPS 42, got %f", config.QPS)
-	}
-	Clientset = nil
-}
-
-func TestConfigureK8sClient_Burst(t *testing.T) {
-	os.Setenv("CLIENT_GO_BURST", "99")
-	defer os.Unsetenv("CLIENT_GO_BURST")
-
-	config := rest.Config{Host: "https://localhost:8443"}
-	ConfigureK8sClient(&config)
-	if Clientset == nil {
-		t.Error("expected Clientset to be initialized")
-	}
-	if config.Burst != 99 {
-		t.Errorf("expected Burst 99, got %d", config.Burst)
-	}
-	Clientset = nil
-}
-
-func TestConfigureK8sClient_ScrapeFromKubelet(t *testing.T) {
-	os.Setenv("SCRAPE_FROM_KUBELET", "true")
-	defer os.Unsetenv("SCRAPE_FROM_KUBELET")
-
-	config := rest.Config{Host: "https://localhost:8443"}
-	ConfigureK8sClient(&config)
-	if Clientset == nil {
-		t.Error("expected Clientset to be initialized")
-	}
-	if ClientRaw == nil {
-		t.Error("expected ClientRaw to be initialized from scrape path")
-	}
-	Clientset = nil
-	ClientRaw = nil
-	ClientAno = nil
+	t.Run("SCRAPE_FROM_KUBELET sets clients", func(t *testing.T) {
+		t.Setenv("KUBECONFIG", kubeconfig)
+		t.Setenv("SCRAPE_FROM_KUBELET", "true")
+		SetK8sClient()
+		if Clientset == nil {
+			t.Error("Clientset should not be nil with SCRAPE_FROM_KUBELET")
+		}
+	})
 }

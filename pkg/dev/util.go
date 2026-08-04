@@ -13,10 +13,11 @@ import (
 	"github.com/rs/zerolog/log"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 var (
-	Clientset kubernetes.Interface
+	Clientset *kubernetes.Clientset
 	ClientRaw *http.Client
 	ClientAno *http.Client
 )
@@ -26,6 +27,14 @@ func GetEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func DeployAsDaemonSet() bool {
+	return GetEnv("DEPLOY_TYPE", "DaemonSet") == "DaemonSet"
+}
+
+func CurrentNodeName() string {
+	return GetEnv("CURRENT_NODE_NAME", "")
 }
 
 func setScrapeFromKubelet(config *rest.Config) {
@@ -54,18 +63,13 @@ func setScrapeFromKubelet(config *rest.Config) {
 }
 
 func SetK8sClient() {
-
-	config, err := rest.InClusterConfig()
+	config, err := getK8sConfig()
 	if err != nil {
-		log.Error().Msg("Failed to get rest config for in cluster client")
-		panic(err.Error())
+		panic(err)
 	}
-	ConfigureK8sClient(config)
-}
 
-// ConfigureK8sClient applies env-var overrides to a k8s config and sets the global Clientset.
-// Extracted from SetK8sClient for testability.
-func ConfigureK8sClient(config *rest.Config) {
+	config.UserAgent = "k8s-ephemeral-storage-metrics"
+
 	scrapeFromKubelet, _ := strconv.ParseBool(GetEnv("SCRAPE_FROM_KUBELET", "false"))
 	if scrapeFromKubelet {
 		setScrapeFromKubelet(config)
@@ -80,7 +84,6 @@ func ConfigureK8sClient(config *rest.Config) {
 	}
 
 	// creates the clientset
-	var err error
 	Clientset, err = kubernetes.NewForConfig(config)
 	if err != nil {
 		log.Error().Msg("Failed to get client set for in cluster client")
@@ -88,6 +91,25 @@ func ConfigureK8sClient(config *rest.Config) {
 	}
 	log.Debug().Msg("Successful got the in cluster client")
 
+}
+
+func getK8sConfig() (*rest.Config, error) {
+	config, err := getK8sConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("KUBECONFIG set but invalid: %w", err)
+	}
+	if config != nil {
+		return config, nil
+	}
+	return rest.InClusterConfig()
+}
+
+func getK8sConfigFromEnv() (*rest.Config, error) {
+	path := os.Getenv("KUBECONFIG")
+	if path == "" {
+		return nil, nil
+	}
+	return clientcmd.BuildConfigFromFlags("", path)
 }
 
 type LineInfoHook struct{}

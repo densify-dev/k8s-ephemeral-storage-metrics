@@ -1,279 +1,231 @@
 package main
 
 import (
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"strconv"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/jmcgrath207/k8s-ephemeral-storage-metrics/pkg/dev"
 	"github.com/jmcgrath207/k8s-ephemeral-storage-metrics/pkg/node"
 	"github.com/jmcgrath207/k8s-ephemeral-storage-metrics/pkg/pod"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 )
 
-func setupMetricsTestEnv(t *testing.T) {
-	t.Helper()
-	os.Setenv("CURRENT_NODE_NAME", "test-node")
-	os.Setenv("EPHEMERAL_STORAGE_POD_USAGE", "true")
-	Node = node.NewCollector(1)
-	Pod = pod.NewCollector(1)
-}
+// TestStartCollectorsOrdersPodBeforeNodeWatch locks in the guarantee that
+// the diff for #199 depends on: the node watch must not begin until the
+// pod collector exists, since a Deployment-mode watch can deliver node
+// delete events that would otherwise evict pod metrics before they exist.
+// It substitutes recording stand-ins for the real constructors so the call
+// order is asserted deterministically, without a real Kubernetes client or
+// Prometheus registry.
+func TestStartCollectorsOrdersPodBeforeNodeWatch(t *testing.T) {
+	var order []string
 
-func teardownMetricsTestEnv(t *testing.T) {
-	t.Helper()
-	os.Unsetenv("CURRENT_NODE_NAME")
-	os.Unsetenv("EPHEMERAL_STORAGE_POD_USAGE")
-}
-
-func setupClientset(t *testing.T, server *httptest.Server) {
-	t.Helper()
-	config := &rest.Config{
-		Host:    server.URL,
-		APIPath: "/api",
-		ContentConfig: rest.ContentConfig{
-			GroupVersion:         &schema.GroupVersion{Group: "", Version: "v1"},
-			NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+	deps := collectorDeps{
+		newNodeCollector: func(int64) node.Node {
+			order = append(order, "node.NewCollector")
+			return node.Node{}
+		},
+		newPodCollector: func(int64) pod.Collector {
+			order = append(order, "pod.NewCollector")
+			return pod.Collector{}
+		},
+		startNodeWatch: func(*node.Node) {
+			order = append(order, "node.StartWatch")
 		},
 	}
-	restClient, err := rest.RESTClientFor(config)
-	if err != nil {
-		t.Fatal(err)
+
+	startCollectors(1, deps)
+
+	want := []string{"node.NewCollector", "pod.NewCollector", "node.StartWatch"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("startup order = %v, want %v", order, want)
 	}
-	clientset := kubernetes.New(restClient)
-
-	dev.Clientset = clientset
 }
 
-func nodeCollector(sampleInterval int64) node.Node {
-	// ponytail: reuse cached collector to avoid redundant goroutines
-	return node.NewCollector(sampleInterval)
-}
+const sampleStatsSummary = `{
+  "node": {"nodeName": "test-node-01"},
+  "pods": [
+    {
+      "podRef": {"name": "pod-a", "namespace": "ns-a"},
+      "ephemeral-storage": {
+        "availableBytes": 8000000,
+        "capacityBytes": 10000000,
+        "usedBytes": 2000000,
+        "inodes": 1000,
+        "inodesFree": 800,
+        "inodesUsed": 200
+      },
+      "volume": [
+        {"name": "empty", "availableBytes": 1000, "capacityBytes": 2000, "usedBytes": 500, "inodes": 100, "inodesFree": 50, "inodesUsed": 50}
+      ]
+    },
+    {
+      "podRef": {"name": "pod-b", "namespace": "ns-b"},
+      "ephemeral-storage": {
+        "availableBytes": 0,
+        "capacityBytes": 0,
+        "usedBytes": 0,
+        "inodes": 0,
+        "inodesFree": 0,
+        "inodesUsed": 0
+      }
+    }
+  ]
+}`
 
-func TestSetMetrics_WithApiServer(t *testing.T) {
-	// ponytail: httptest-based integration test for setMetrics
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
-			"node": {"nodeName": "test-node"},
-			"pods": [{
-				"podRef": {"name": "pod-1", "namespace": "ns-1"},
-				"ephemeral-storage": {
-					"usedBytes": 100,
-					"availableBytes": 900,
-					"capacityBytes": 1000,
-					"inodes": 1000,
-					"inodesFree": 500,
-					"inodesUsed": 500
-				},
-				"containers": [],
-				"volume": []
-			}]
-		}`))
-	}))
-	defer server.Close()
-
-	setupClientset(t, server)
-	defer func() { dev.Clientset = nil }()
-
-	setupMetricsTestEnv(t)
-	defer teardownMetricsTestEnv(t)
-
-	setMetrics("test-node")
-}
-
-func TestSetMetrics_QueryError(t *testing.T) {
-	// ponytail: short interval so backoff doesn't make test slow
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	setupClientset(t, server)
-	defer func() { dev.Clientset = nil }()
-
-	os.Setenv("CURRENT_NODE_NAME", "test-node")
-	os.Setenv("EPHEMERAL_STORAGE_POD_USAGE", "true")
-	// Use sampleInterval=1 so backoff expires quickly
-	Node = node.NewCollector(1)
-	Pod = pod.NewCollector(1)
-	defer func() {
-		os.Unsetenv("CURRENT_NODE_NAME")
-		os.Unsetenv("EPHEMERAL_STORAGE_POD_USAGE")
-	}()
-
-	setMetrics("test-node")
-}
-
-func TestSetMetrics_EmptyNamespacePod(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
-			"node": {"nodeName": "test-node"},
-			"pods": [{
-				"podRef": {"name": "no-ns", "namespace": ""},
-				"ephemeral-storage": {
-					"usedBytes": 100,
-					"availableBytes": 900,
-					"capacityBytes": 1000,
-					"inodes": 1000,
-					"inodesFree": 500,
-					"inodesUsed": 500
-				},
-				"containers": [],
-				"volume": []
-			}]
-		}`))
-	}))
-	defer server.Close()
-
-	setupClientset(t, server)
-	defer func() { dev.Clientset = nil }()
-
-	setupMetricsTestEnv(t)
-	defer teardownMetricsTestEnv(t)
-
-	setMetrics("test-node")
-}
-
-func TestSetMetrics_ZeroMetricsPod(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
-			"node": {"nodeName": "test-node"},
-			"pods": [{
-				"podRef": {"name": "zero-pod", "namespace": "ns-zero"},
-				"ephemeral-storage": {
-					"usedBytes": 0,
-					"availableBytes": 0,
-					"capacityBytes": 0,
-					"inodes": 0,
-					"inodesFree": 0,
-					"inodesUsed": 0
-				},
-				"containers": [],
-				"volume": []
-			}]
-		}`))
-	}))
-	defer server.Close()
-
-	setupClientset(t, server)
-	defer func() { dev.Clientset = nil }()
-
-	setupMetricsTestEnv(t)
-	defer teardownMetricsTestEnv(t)
-
-	setMetrics("test-node")
-}
-
-func TestGetMetrics_NoCrash(t *testing.T) {
-	// ponytail: verify getMetrics starts without crashing.
-	// It loops forever, so we run briefly then let goroutine leak.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	setupClientset(t, server)
-	defer func() { dev.Clientset = nil }()
-
-	os.Setenv("CURRENT_NODE_NAME", "test-node")
-	os.Setenv("EPHEMERAL_STORAGE_POD_USAGE", "true")
-	Node = node.NewCollector(1)
-	Pod = pod.NewCollector(1)
-	defer func() {
-		os.Unsetenv("CURRENT_NODE_NAME")
-		os.Unsetenv("EPHEMERAL_STORAGE_POD_USAGE")
-	}()
-
-	// Start getMetrics in goroutine; it loops forever
-	go getMetrics()
-	time.Sleep(50 * time.Millisecond)
-	// ponytail: goroutine leak, process exit cleans up
-}
-
-func startAppTest(t *testing.T, extraEnv func()) string {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	t.Cleanup(server.Close)
-
-	setupClientset(t, server)
-	t.Cleanup(func() { dev.Clientset = nil })
-
-	os.Setenv("CURRENT_NODE_NAME", "test-node")
-	os.Setenv("EPHEMERAL_STORAGE_POD_USAGE", "true")
-	t.Cleanup(func() {
-		os.Unsetenv("CURRENT_NODE_NAME")
-		os.Unsetenv("EPHEMERAL_STORAGE_POD_USAGE")
-	})
-	if extraEnv != nil {
-		extraEnv()
+func TestEphemeralStorageMetricsUnmarshal(t *testing.T) {
+	var data ephemeralStorageMetrics
+	if err := json.Unmarshal([]byte(sampleStatsSummary), &data); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
 	}
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	if data.Node.NodeName != "test-node-01" {
+		t.Errorf("node name = %q, want test-node-01", data.Node.NodeName)
 	}
-	freePort := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
-
-	go StartApplication(strconv.Itoa(freePort), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`metrics output`))
-	}))
-
-	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", freePort)
-	deadline := time.Now().Add(2 * time.Second)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(url)
-		if err == nil {
-			resp.Body.Close()
-			return url
-		}
-		lastErr = err
-		time.Sleep(25 * time.Millisecond)
+	if len(data.Pods) != 2 {
+		t.Fatalf("pods len = %d, want 2", len(data.Pods))
 	}
-	t.Fatalf("metrics server did not start in time: %v", lastErr)
-	return url
+	first := data.Pods[0]
+	if first.PodRef.Name != "pod-a" || first.PodRef.Namespace != "ns-a" {
+		t.Errorf("pod ref = %+v", first.PodRef)
+	}
+	if first.EphemeralStorage.UsedBytes != 2000000 {
+		t.Errorf("used bytes = %v, want 2000000", first.EphemeralStorage.UsedBytes)
+	}
+	if first.EphemeralStorage.CapacityBytes != 10000000 {
+		t.Errorf("capacity bytes = %v, want 10000000", first.EphemeralStorage.CapacityBytes)
+	}
+	if first.EphemeralStorage.AvailableBytes != 8000000 {
+		t.Errorf("available bytes = %v, want 8000000", first.EphemeralStorage.AvailableBytes)
+	}
+	if first.EphemeralStorage.Inodes != 1000 {
+		t.Errorf("inodes = %v, want 1000", first.EphemeralStorage.Inodes)
+	}
+	if first.EphemeralStorage.InodesFree != 800 {
+		t.Errorf("inodes free = %v, want 800", first.EphemeralStorage.InodesFree)
+	}
+	if first.EphemeralStorage.InodesUsed != 200 {
+		t.Errorf("inodes used = %v, want 200", first.EphemeralStorage.InodesUsed)
+	}
+	if len(first.Volumes) != 1 {
+		t.Fatalf("volumes len = %d, want 1", len(first.Volumes))
+	}
+	if first.Volumes[0].Name != "empty" {
+		t.Errorf("volume name = %q, want empty", first.Volumes[0].Name)
+	}
+	if first.Volumes[0].UsedBytes != 500 {
+		t.Errorf("volume used = %v, want 500", first.Volumes[0].UsedBytes)
+	}
+	second := data.Pods[1]
+	if second.PodRef.Name != "pod-b" {
+		t.Errorf("second pod name = %q, want pod-b", second.PodRef.Name)
+	}
+	if second.EphemeralStorage.UsedBytes != 0 {
+		t.Errorf("second pod used bytes = %v, want 0", second.EphemeralStorage.UsedBytes)
+	}
 }
 
-func TestStartApplication_NoCrash(t *testing.T) {
-	metricsURL := startAppTest(t, nil)
-
-	resp, err := http.Get(metricsURL)
-	if err != nil {
-		t.Fatalf("metrics endpoint unreachable: %v", err)
+func TestEphemeralStorageMetricsUnmarshalMissingFields(t *testing.T) {
+	const minimal = `{"node": {"nodeName": "n1"}, "pods": [{"podRef": {"name": "p", "namespace": "ns"}}]}`
+	var data ephemeralStorageMetrics
+	if err := json.Unmarshal([]byte(minimal), &data); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "metrics output") {
-		t.Errorf("expected metrics output, got %q", string(body))
+	if data.Node.NodeName != "n1" {
+		t.Errorf("node name = %q, want n1", data.Node.NodeName)
 	}
-	// ponytail: goroutine leak, process exit cleans up
+	if len(data.Pods) != 1 {
+		t.Fatalf("pods len = %d, want 1", len(data.Pods))
+	}
+	p := data.Pods[0]
+	if p.PodRef.Name != "p" || p.PodRef.Namespace != "ns" {
+		t.Errorf("pod ref = %+v", p.PodRef)
+	}
+	if p.EphemeralStorage.UsedBytes != 0 {
+		t.Errorf("expected zero ephemeral storage, got %+v", p.EphemeralStorage)
+	}
+	if len(p.Volumes) != 0 {
+		t.Errorf("expected no volumes, got %d", len(p.Volumes))
+	}
+	if len(p.Containers) != 0 {
+		t.Errorf("expected no containers, got %d", len(p.Containers))
+	}
 }
 
-func TestStartApplication_WithPprof(t *testing.T) {
-	metricsURL := startAppTest(t, func() {
-		os.Setenv("PPROF", "true")
-		t.Cleanup(func() { os.Unsetenv("PPROF") })
-	})
-
-	resp, err := http.Get(metricsURL)
-	if err != nil {
-		t.Fatalf("metrics endpoint unreachable: %v", err)
+func TestEphemeralStorageMetricsUnmarshalMalformed(t *testing.T) {
+	const bad = `{"node": "not-an-object"}`
+	var data ephemeralStorageMetrics
+	err := json.Unmarshal([]byte(bad), &data)
+	if err == nil {
+		t.Fatal("expected unmarshal error for malformed input, got nil")
 	}
-	resp.Body.Close()
-	// ponytail: goroutine leak (pprof and metrics server), process exit cleans up
+	if !strings.Contains(err.Error(), "cannot unmarshal") && !strings.Contains(err.Error(), "invalid character") {
+		t.Logf("got error: %v (acceptable)", err)
+	}
+}
+
+func TestSetMetricsFromSummaryRejectsMalformedJSON(t *testing.T) {
+	err := setMetricsFromSummary("test-node", []byte(`{"pods": [`))
+	if err == nil {
+		t.Fatal("expected malformed stats summary to return an error")
+	}
+	if !strings.Contains(err.Error(), "decode stats summary") {
+		t.Fatalf("error = %q, want decode context", err)
+	}
+}
+
+func TestEphemeralStorageMetricsUnmarshalEmpty(t *testing.T) {
+	var data ephemeralStorageMetrics
+	if err := json.Unmarshal([]byte(`{}`), &data); err != nil {
+		t.Fatalf("unmarshal empty: %v", err)
+	}
+	if data.Node.NodeName != "" {
+		t.Errorf("node name = %q, want empty", data.Node.NodeName)
+	}
+	if len(data.Pods) != 0 {
+		t.Errorf("pods len = %d, want 0", len(data.Pods))
+	}
+}
+
+func TestEphemeralStorageMetricsUnmarshalContainers(t *testing.T) {
+	const withContainers = `{
+	  "node": {"nodeName": "n1"},
+	  "pods": [{
+	    "podRef": {"name": "p", "namespace": "ns"},
+	    "ephemeral-storage": {"usedBytes": 100, "availableBytes": 200, "capacityBytes": 300, "inodes": 0, "inodesFree": 0, "inodesUsed": 0},
+	    "containers": [
+	      {
+	        "name": "c1",
+	        "rootfs": {"availableBytes": 100, "capacityBytes": 200, "usedBytes": 50, "inodes": 0, "inodesFree": 0, "inodesUsed": 0},
+	        "logs": {"availableBytes": 50, "capacityBytes": 100, "usedBytes": 25, "inodes": 0, "inodesFree": 0, "inodesUsed": 0}
+	      }
+	    ]
+	  }]
+	}`
+	var data ephemeralStorageMetrics
+	if err := json.Unmarshal([]byte(withContainers), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(data.Pods) != 1 {
+		t.Fatalf("pods = %d, want 1", len(data.Pods))
+	}
+	containers := data.Pods[0].Containers
+	if len(containers) != 1 {
+		t.Fatalf("containers = %d, want 1", len(containers))
+	}
+	c := containers[0]
+	if c.Name != "c1" {
+		t.Errorf("container name = %q, want c1", c.Name)
+	}
+	if c.Rootfs.UsedBytes != 50 {
+		t.Errorf("rootfs used = %v, want 50", c.Rootfs.UsedBytes)
+	}
+	if c.Rootfs.CapacityBytes != 200 {
+		t.Errorf("rootfs capacity = %v, want 200", c.Rootfs.CapacityBytes)
+	}
+	if c.Logs.UsedBytes != 25 {
+		t.Errorf("logs used = %v, want 25", c.Logs.UsedBytes)
+	}
+	if c.Logs.AvailableBytes != 50 {
+		t.Errorf("logs available = %v, want 50", c.Logs.AvailableBytes)
+	}
 }

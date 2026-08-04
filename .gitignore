@@ -90,4 +90,9 @@ fabric.properties
 
 chart/k8s-ephemeral-storage-metrics-*.tgz
 
-bin/
+/bin/
+.vscode/
+.idea/
+/tests/charts/observability/Chart.lock
+/tests/charts/observability/charts/
+/docs/

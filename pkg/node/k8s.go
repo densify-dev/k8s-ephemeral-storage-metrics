@@ -14,8 +14,8 @@ import (
 	"github.com/jmcgrath207/k8s-ephemeral-storage-metrics/pkg/dev"
 	"github.com/rs/zerolog/log"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -52,13 +52,7 @@ func (n *Node) Query(node string) ([]byte, error) {
 		var resp *http.Response
 		var err error
 		if !n.scrapeFromKubelet || n.deployType != "Deployment" {
-			// ponytail: type assertion to get RESTClient from concrete type. Interface doesn't expose it.
-			c, ok := dev.Clientset.(*kubernetes.Clientset)
-			if !ok {
-				err = fmt.Errorf("clientset is not *kubernetes.Clientset")
-				return err
-			}
-			content, err = c.RESTClient().Get().AbsPath(fmt.Sprintf("/api/v1/nodes/%s/proxy/stats/summary", node)).DoRaw(context.Background())
+			content, err = dev.Clientset.RESTClient().Get().AbsPath(fmt.Sprintf("/api/v1/nodes/%s/proxy/stats/summary", node)).DoRaw(context.Background())
 			if err != nil {
 				return err
 			}
@@ -106,13 +100,24 @@ func (n *Node) Watch() {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	// TODO: break out the sampleInterval into Groups. E.g. nodeSampleInterval, podSampleInterval, metricsSampleInterval
-	sharedInformerFactory := informers.NewSharedInformerFactory(dev.Clientset, time.Duration(n.sampleInterval)*time.Second)
+	var sharedInformerFactory informers.SharedInformerFactory
+	if n.nodeLabelSelector != "" {
+		sharedInformerFactory = informers.NewSharedInformerFactoryWithOptions(dev.Clientset, time.Duration(n.sampleInterval)*time.Second, informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.LabelSelector = n.nodeLabelSelector
+		}))
+	} else {
+		sharedInformerFactory = informers.NewSharedInformerFactory(dev.Clientset, time.Duration(n.sampleInterval)*time.Second)
+	}
 	nodeInformer := sharedInformerFactory.Core().V1().Nodes().Informer()
 
 	// Define event handlers for Pod events
 	eventHandler := cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			p := obj.(*v1.Node)
+			p, ok := obj.(*v1.Node)
+			if !ok {
+				log.Error().Msgf("nodeWatch: AddFunc got unexpected type %T", obj)
+				return
+			}
 			if checkKubeletStatus(&p.Status.Conditions) {
 				n.Set.Add(p.Name)
 				if n.scrapeFromKubelet {
@@ -121,7 +126,11 @@ func (n *Node) Watch() {
 			}
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
-			p := newObj.(*v1.Node)
+			p, ok := newObj.(*v1.Node)
+			if !ok {
+				log.Error().Msgf("nodeWatch: UpdateFunc got unexpected type %T", newObj)
+				return
+			}
 			// Add nodes back that have changed readiness status.
 			if checkKubeletStatus(&p.Status.Conditions) {
 				n.Set.Add(p.Name)
@@ -131,7 +140,21 @@ func (n *Node) Watch() {
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
-			p := obj.(*v1.Node)
+			p, ok := obj.(*v1.Node)
+			if !ok {
+				// On a missed delete the informer delivers a DeletedFinalStateUnknown
+				// tombstone rather than the *v1.Node; unwrap it before use to avoid a panic.
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					log.Error().Msgf("nodeWatch: DeleteFunc got unexpected type %T", obj)
+					return
+				}
+				p, ok = tombstone.Obj.(*v1.Node)
+				if !ok {
+					log.Error().Msgf("nodeWatch: tombstone held non-Node %T", tombstone.Obj)
+					return
+				}
+			}
 			n.evict(p.Name)
 			if n.scrapeFromKubelet {
 				n.KubeletEndpoint.Delete(p.Name)

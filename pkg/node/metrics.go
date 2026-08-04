@@ -17,49 +17,44 @@ var (
 )
 
 func (n *Node) createMetrics() {
-	if nodeAvailableGaugeVec == nil {
-		nodeAvailableGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "ephemeral_storage_node_available",
-			Help: "Available ephemeral storage for a node",
+
+	nodeAvailableGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ephemeral_storage_node_available",
+		Help: "Available ephemeral storage for a node",
+	},
+		[]string{
+			// Name of Node where pod is placed.
+			"node_name",
 		},
-			[]string{
-				// Name of Node where pod is placed.
-				"node_name",
-			},
-		)
+	)
 
-		prometheus.MustRegister(nodeAvailableGaugeVec)
-	}
+	prometheus.MustRegister(nodeAvailableGaugeVec)
 
-	if nodeCapacityGaugeVec == nil {
-		nodeCapacityGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "ephemeral_storage_node_capacity",
-			Help: "Capacity of ephemeral storage for a node",
+	nodeCapacityGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ephemeral_storage_node_capacity",
+		Help: "Capacity of ephemeral storage for a node",
+	},
+		[]string{
+			// Name of Node where pod is placed.
+			"node_name",
 		},
-			[]string{
-				// Name of Node where pod is placed.
-				"node_name",
-			},
-		)
+	)
 
-		prometheus.MustRegister(nodeCapacityGaugeVec)
-	}
+	prometheus.MustRegister(nodeCapacityGaugeVec)
 
-	if nodePercentageGaugeVec == nil {
-		nodePercentageGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "ephemeral_storage_node_percentage",
-			Help: "Percentage of ephemeral storage used on a node",
+	nodePercentageGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ephemeral_storage_node_percentage",
+		Help: "Percentage of ephemeral storage used on a node",
+	},
+		[]string{
+			// Name of Node where pod is placed.
+			"node_name",
 		},
-			[]string{
-				// Name of Node where pod is placed.
-				"node_name",
-			},
-		)
+	)
 
-		prometheus.MustRegister(nodePercentageGaugeVec)
-	}
+	prometheus.MustRegister(nodePercentageGaugeVec)
 
-	if n.AdjustedPollingRate && AdjustedPollingRateGaugeVec == nil {
+	if n.AdjustedPollingRate {
 		AdjustedPollingRateGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "ephemeral_storage_adjusted_polling_rate",
 			Help: "AdjustTime polling rate time after a Node API queries in Milliseconds",
@@ -71,6 +66,7 @@ func (n *Node) createMetrics() {
 
 		prometheus.MustRegister(AdjustedPollingRateGaugeVec)
 	}
+
 }
 
 func (n *Node) SetMetrics(nodeName string, availableBytes float64, capacityBytes float64) {
